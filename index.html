@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MRV X</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="scanline-overlay"></div>
+    <div class="container">
+        <div id="auth-screen" class="screen active">
+            <h1 class="banner">MRV X</h1>
+            <p class="prompt">> Masukkan Kode Akses Room Rahasia</p>
+            <div class="input-container">
+                <span class="cursor-prefix">$</span>
+                <input type="password" id="room-code-input" class="terminal-input" autofocus>
+            </div>
+            <button id="auth-button" class="terminal-button">[ Validasi ]</button>
+        </div>
+
+        <div id="identity-screen" class="screen">
+            <h1 class="banner">MRV X</h1>
+            <p class="prompt">> Buat Nickname Anonim untuk Sesi Ini</p>
+            <div class="input-container">
+                <span class="cursor-prefix">$</span>
+                <input type="text" id="nickname-input" class="terminal-input">
+            </div>
+            <button id="create-room-button" class="terminal-button">[ Buat Room (Peer A) ]</button>
+            <button id="join-room-button" class="terminal-button">[ Gabung Room (Peer B) ]</button>
+        </div>
+
+        <div id="signaling-screen" class="screen">
+            <h1 class="banner">MRV X :: PROSES SINYAL MANUAL</h1>
+            <div id="peer-a-instructions">
+                <p class="prompt">> [PEER A] Salin token di bawah & kirim ke Peer B.</p>
+                <textarea id="offer-token-output" class="token-box" readonly></textarea>
+                <p class="prompt">> Tempel 'Answer Token' dari Peer B di sini:</p>
+                <textarea id="answer-token-input" class="token-box"></textarea>
+                <button id="connect-button" class="terminal-button">[ Hubungkan ]</button>
+            </div>
+            <div id="peer-b-instructions">
+                <p class="prompt">> [PEER B] Tempel 'Offer Token' dari Peer A di sini:</p>
+                <textarea id="offer-token-input" class="token-box"></textarea>
+                <button id="create-answer-button" class="terminal-button">[ Buat Jawaban ]</button>
+                <p class="prompt">> Salin 'Answer Token' di bawah & kirim kembali ke Peer A.</p>
+                <textarea id="answer-token-output" class="token-box" readonly></textarea>
+            </div>
+        </div>
+
+        <div id="chat-screen" class="screen">
+            <div id="chat-log" class="chat-log">
+                <p class="system-message">-- Koneksi P2P Aman Terbentuk. Sesi Aktif. --</p>
+                <p class="system-message">-- Riwayat tidak disimpan. Tutup tab untuk mengakhiri. --</p>
+            </div>
+            <div class="input-container chat-input-container">
+                <span id="chat-prefix" class="cursor-prefix"></span>
+                <input type="text" id="message-input" class="terminal-input" placeholder="Ketik pesan...">
+            </div>
+        </div>
+    </div>
+    <script src="js/main.js"></script>
+</body>
+</html>
