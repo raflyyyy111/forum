@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MRV X [v2.1]</title>
+    <title>MRV X [v3.0 FINAL]</title>
     <link rel="stylesheet" href="css/style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,27 +12,27 @@
 <body>
     <div class="scanline-overlay"></div>
     <div class="container">
-        <div id="auth-screen" class="screen active">
+        <div id="main-screen" class="screen active">
             <h1 class="banner">MRV X</h1>
-            <p class="prompt">> Masukkan Kode Akses Room Rahasia</p>
-            <div class="input-container">
-                <span class="cursor-prefix">$</span>
-                <input type="password" id="room-code-input" class="terminal-input" autofocus>
+            <div id="creator-view">
+                <p class="prompt">> Buat sebuah ruang komunikasi terenkripsi baru.</p>
+                <button id="create-room-button" class="terminal-button">[ Buat Room Aman Baru ]</button>
             </div>
-            <p class="prompt">> Buat Nickname Anonim</p>
-            <div class="input-container">
-                 <span class="cursor-prefix">$</span>
-                <input type="text" id="nickname-input" class="terminal-input" placeholder="anon">
+            <div id="joiner-view" style="display: none;">
+                <p class="prompt">> Membaca link undangan...</p>
+                <p id="status-text" class="system-message"></p>
             </div>
-            <button id="join-button" class="terminal-button">[ Hubungkan ke Room ]</button>
-            <p id="status-text" class="system-message"></p>
+             <div id="invitation-view" style="display: none;">
+                <p class="prompt">> Room aman telah dibuat. Salin dan bagikan link rahasia di bawah ini:</p>
+                <textarea id="invite-link-output" class="token-box" readonly></textarea>
+                <button id="copy-link-button" class="terminal-button">[ Salin Link ]</button>
+                <p id="creator-status-text" class="system-message">> Menunggu teman untuk bergabung...</p>
+            </div>
         </div>
-
         <div id="chat-screen" class="screen">
-            <div id="chat-log" class="chat-log">
-                </div>
+            <div id="chat-log" class="chat-log"></div>
             <div class="input-container chat-input-container">
-                <span id="chat-prefix" class="cursor-prefix"></span>
+                <span class="cursor-prefix">[anon]$</span>
                 <input type="text" id="message-input" class="terminal-input" placeholder="Ketik pesan...">
             </div>
         </div>
