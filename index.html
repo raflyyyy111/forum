@@ -3,45 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MRV X [v3.1 ROBUST]</title>
-    <link rel="stylesheet" href="css/style.css">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+    <title>MRV X [v4.0 PEERJS]</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 </head>
 <body>
-    <div class="scanline-overlay"></div>
     <div class="container">
-        <div id="main-screen" class="screen active">
-            <h1 class="banner">MRV X</h1>
-            <div id="creator-view">
-                <p class="prompt">> Buat sebuah ruang komunikasi terenkripsi baru.</p>
-                <button id="create-room-button" class="terminal-button">[ Buat Room Aman Baru ]</button>
-            </div>
-            <div id="joiner-view" style="display: none;">
-                <p class="prompt">> Membaca link undangan...</p>
-                <p id="status-text" class="system-message"></p>
-            </div>
-             <div id="invitation-view" style="display: none;">
-                <p class="prompt">> Room aman telah dibuat. Salin dan bagikan link rahasia di bawah ini:</p>
-                <textarea id="invite-link-output" class="token-box" readonly></textarea>
-                <button id="copy-link-button" class="terminal-button">[ Salin Link ]</button>
-                <p id="creator-status-text" class="system-message">> Menunggu teman untuk bergabung...</p>
-            </div>
+        <h1>MRV X <span>v4.0</span></h1>
+        
+        <div class="connection-box">
+            <h2>1. Status Koneksi</h2>
+            <p>ID Unik Anda: <strong id="my-id">Memuat...</strong></p>
+            <p>Status: <span id="status">Inisialisasi...</span></p>
         </div>
 
-        <div id="chat-screen" class="screen">
-            <div class="chat-header">
-                <p id="connection-status" class="system-message">Koneksi: Terhubung</p>
-                <p id="typing-indicator" class="system-message"></p>
-            </div>
-            <div id="chat-log" class="chat-log"></div>
-            <div class="input-container chat-input-container">
-                <span id="chat-prefix" class="cursor-prefix">[anon]$</span>
-                <input type="text" id="message-input" class="terminal-input" placeholder="Ketik pesan..." disabled>
-            </div>
+        <div class="connection-box">
+            <h2>2. Hubungkan ke Teman</h2>
+            <input type="text" id="peer-id-input" placeholder="Masukkan ID teman Anda">
+            <button id="connect-button">Hubungkan</button>
+        </div>
+
+        <div id="chat-box" class="chat-box" style="display: none;">
+            <h2>3. Sesi Aman</h2>
+            <input type="password" id="secret-key-input" placeholder="Masukkan & bagikan kata sandi rahasia...">
+            <button id="start-secure-button">Mulai Enkripsi</button>
+            <div id="chat-log"></div>
+            <textarea id="message-input" placeholder="Ketik pesan terenkripsi..." disabled></textarea>
+            <button id="send-button" disabled>Kirim</button>
         </div>
     </div>
-    <script src="js/main.js"></script>
+    <script src="main.js"></script>
 </body>
 </html>
