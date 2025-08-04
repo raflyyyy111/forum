@@ -126,23 +126,15 @@ body {
     color: var(--background);
     text-shadow: none;
 }
-.terminal-button:hover.destructive {
-    background-color: var(--accent-warning);
+.terminal-button:disabled {
+    border-color: var(--secondary-gray);
+    color: var(--secondary-gray);
+    cursor: not-allowed;
+}
+.terminal-button:disabled:hover {
+    background-color: transparent;
 }
 
-.token-box {
-    width: 100%;
-    height: 100px;
-    background-color: #1a1a1a;
-    border: 1px solid var(--secondary-gray);
-    color: var(--text-primary);
-    font-family: var(--font-family);
-    font-size: 14px;
-    resize: none;
-    padding: 0.5rem;
-    margin-bottom: 1rem;
-    word-break: break-all;
-}
 
 /* Chat Screen specific */
 .chat-log {
@@ -162,12 +154,10 @@ body {
 .system-message {
     color: var(--secondary-gray);
     font-style: italic;
+    margin-top: 1rem;
+    height: 20px; /* Beri ruang agar layout tidak loncat */
 }
 
 .nickname {
     color: var(--accent-warning);
-}
-
-#peer-a-instructions, #peer-b-instructions {
-    display: none;
 }
