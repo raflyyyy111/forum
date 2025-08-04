@@ -1,57 +1,83 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // === Konfigurasi & Seleksi Elemen DOM ===
-    const SIGNALING_SERVER_URL = 'wss://safe-salty-sand.glitch.me/'; // Server publik gratis
+    const SIGNALING_SERVER_URL = 'wss://safe-salty-sand.glitch.me/';
     const STUN_SERVER = 'stun:stun.l.google.com:19302';
 
     const screens = {
-        auth: document.getElementById('auth-screen'),
+        main: document.getElementById('main-screen'),
         chat: document.getElementById('chat-screen'),
     };
-    const roomCodeInput = document.getElementById('room-code-input');
-    const nicknameInput = document.getElementById('nickname-input');
-    const joinButton = document.getElementById('join-button');
+    const creatorView = document.getElementById('creator-view');
+    const joinerView = document.getElementById('joiner-view');
+    const invitationView = document.getElementById('invitation-view');
+    
+    const createRoomButton = document.getElementById('create-room-button');
     const statusText = document.getElementById('status-text');
+    const creatorStatusText = document.getElementById('creator-status-text');
+    const inviteLinkOutput = document.getElementById('invite-link-output');
+    const copyLinkButton = document.getElementById('copy-link-button');
+
     const messageInput = document.getElementById('message-input');
     const chatLog = document.getElementById('chat-log');
-    const chatPrefix = document.getElementById('chat-prefix');
+    const chatPrefix = document.querySelector('#chat-screen .cursor-prefix');
 
-    // === State Aplikasi ===
     let cryptoKey = null;
-    let nickname = '';
     let roomId = null;
     let peerConnection;
     let dataChannel;
     let ws;
 
-    // === Fungsi Utama ===
+    async function init() {
+        if (window.location.hash) {
+            creatorView.style.display = 'none';
+            joinerView.style.display = 'block';
+            try {
+                const hashContent = window.location.hash.substring(1);
+                const [parsedRoomId, keyString] = hashContent.split(':');
+                if (!parsedRoomId || !keyString) throw new Error('Link undangan tidak valid.');
+                roomId = parsedRoomId;
+                updateStatus('Kunci terdeteksi. Mengimpor kunci enkripsi...');
+                cryptoKey = await importKeyFromString(keyString);
+                connectToSignalingServer();
+            } catch (error) {
+                updateStatus(`ERROR: ${error.message}`);
+            }
+        } else {
+            creatorView.style.display = 'block';
+            joinerView.style.display = 'none';
+        }
+    }
 
     function showScreen(screenName) {
         Object.values(screens).forEach(screen => screen.classList.remove('active'));
         screens[screenName].classList.add('active');
     }
 
-    function updateStatus(message) {
-        statusText.textContent = `> ${message}`;
+    function updateStatus(message, isCreator = false) {
+        const target = isCreator ? creatorStatusText : statusText;
+        target.textContent = `> ${message}`;
     }
 
-    async function generateRoomId(password) {
-        const encoder = new TextEncoder();
-        const data = encoder.encode(password);
-        const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-        const hashArray = Array.from(new Uint8Array(hashBuffer));
-        // Ubah hash menjadi string hex untuk ID yang unik dan aman
-        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    async function createNewKey() {
+        return await crypto.subtle.generateKey(
+            { name: 'AES-GCM', length: 256 },
+            true,
+            ['encrypt', 'decrypt']
+        );
     }
 
-    // === Logika Kriptografi ===
-    async function deriveKeyFromPassword(password) {
-        const encoder = new TextEncoder();
-        const passwordBuffer = encoder.encode(password);
-        const salt = encoder.encode('MRVX_SALT_V2.1'); // Ganti salt untuk versi baru
-        const importedKey = await crypto.subtle.importKey('raw', passwordBuffer, { name: 'PBKDF2' }, false, ['deriveKey']);
-        return await crypto.subtle.deriveKey(
-            { name: 'PBKDF2', salt: salt, iterations: 100000, hash: 'SHA-256' },
-            importedKey, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']
+    async function exportKeyToString(key) {
+        const exported = await crypto.subtle.exportKey('jwk', key);
+        return btoa(JSON.stringify(exported));
+    }
+
+    async function importKeyFromString(keyString) {
+        const jwk = JSON.parse(atob(keyString));
+        return await crypto.subtle.importKey(
+            'jwk',
+            jwk,
+            { name: 'AES-GCM' },
+            true,
+            ['encrypt', 'decrypt']
         );
     }
 
@@ -74,42 +100,39 @@ document.addEventListener('DOMContentLoaded', () => {
             const decoder = new TextDecoder();
             return decoder.decode(decryptedBuffer);
         } catch (error) {
-            console.error('Dekripsi gagal:', error);
-            return '[[ PESAN GAGAL DIDEKRIPSI - KODE AKSES MUNGKIN SALAH ]]';
+            console.error('Decryption failed:', error);
+            return '[[ PESAN GAGAL DIDEKRIPSI ]]';
         }
     }
 
-    // === Logika Signaling & WebRTC ===
-
-    function connectToSignalingServer() {
-        updateStatus('Menghubungkan ke signaling server...');
+    function connectToSignalingServer(isCreator = false) {
+        updateStatus('Menghubungkan ke signaling server...', isCreator);
         ws = new WebSocket(SIGNALING_SERVER_URL);
 
         ws.onopen = () => {
-            updateStatus('Terhubung. Bergabung ke room...');
-            const joinMessage = { type: 'join', roomId: roomId };
-            ws.send(JSON.stringify(joinMessage));
+            updateStatus('Terhubung. Bergabung ke room...', isCreator);
+            ws.send(JSON.stringify({ type: 'join', roomId: roomId }));
         };
 
         ws.onmessage = async (event) => {
             const message = JSON.parse(event.data);
             switch (message.type) {
-                case 'room-created': // Anda orang pertama
-                    updateStatus('Room berhasil dibuat. Menunggu teman...');
+                case 'room-created':
+                    updateStatus('Room berhasil dibuat. Menunggu teman...', true);
                     break;
-                case 'room-joined': // Anda orang kedua
+                case 'room-joined':
                     updateStatus('Berhasil gabung ke room. Menunggu teman...');
                     break;
-                case 'peer-joined': // Untuk orang pertama, saat orang kedua gabung
-                    updateStatus('Teman terdeteksi! Memulai negosiasi...');
+                case 'peer-joined':
+                    updateStatus('Teman terdeteksi! Memulai negosiasi...', true);
                     await createOffer();
                     break;
-                case 'offer': // Untuk orang kedua, menerima offer
+                case 'offer':
                     updateStatus('Menerima penawaran, membalas...');
                     await handleOffer(message.offer);
                     break;
-                case 'answer': // Untuk orang pertama, menerima answer
-                    updateStatus('Jawaban diterima, menyelesaikan koneksi...');
+                case 'answer':
+                    updateStatus('Jawaban diterima, menyelesaikan koneksi...', true);
                     await handleAnswer(message.answer);
                     break;
                 case 'ice-candidate':
@@ -120,21 +143,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 case 'room-full':
                     updateStatus('ERROR: Room sudah penuh.');
                     ws.close();
-                    joinButton.disabled = false;
                     break;
             }
         };
 
         ws.onerror = (error) => {
             console.error('WebSocket Error:', error);
-            updateStatus('ERROR: Tidak bisa terhubung ke signaling server.');
-            joinButton.disabled = false;
+            updateStatus('ERROR: Gagal terhubung ke signaling server.', isCreator);
         };
         
         ws.onclose = () => {
             if (peerConnection?.connectionState !== 'connected') {
-                 updateStatus('Koneksi ke signaling server terputus.');
-                 joinButton.disabled = false;
+                 updateStatus('Koneksi ke signaling server terputus.', isCreator);
             }
         };
     }
@@ -144,7 +164,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         peerConnection.onicecandidate = (event) => {
             if (event.candidate) {
-                // Kirim ICE candidate ke peer lain melalui signaling server
                 ws.send(JSON.stringify({
                     type: 'ice-candidate',
                     candidate: event.candidate,
@@ -154,14 +173,15 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         
         peerConnection.onconnectionstatechange = () => {
-            if (peerConnection.connectionState === 'connected') {
+            const state = peerConnection.connectionState;
+            if (state === 'connected') {
+                updateStatus('Koneksi P2P aman terbentuk!', true);
                 updateStatus('Koneksi P2P aman terbentuk!');
-                setTimeout(() => showScreen('chat'), 1000); // Tunda sedikit untuk transisi
+                setTimeout(() => showScreen('chat'), 1000);
             }
-             if (peerConnection.connectionState === 'failed') {
-                updateStatus('Koneksi P2P gagal.');
-                peerConnection.close();
-                ws.close();
+             if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+                updateStatus('Koneksi P2P gagal atau terputus.');
+                if (ws.readyState === WebSocket.OPEN) ws.close();
              }
         };
 
@@ -188,34 +208,31 @@ document.addEventListener('DOMContentLoaded', () => {
         setupPeerConnection();
         dataChannel = peerConnection.createDataChannel('mrvx-channel');
         setupDataChannelEvents();
-        
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
-        
         ws.send(JSON.stringify({ type: 'offer', offer: offer, roomId: roomId }));
     }
 
     async function handleOffer(offer) {
         setupPeerConnection();
         await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-        
         const answer = await peerConnection.createAnswer();
         await peerConnection.setLocalDescription(answer);
-
         ws.send(JSON.stringify({ type: 'answer', answer: answer, roomId: roomId }));
     }
 
     async function handleAnswer(answer) {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        if (peerConnection?.signalingState === 'have-local-offer') {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        }
     }
 
-    // === Logika Chat ===
     function displayMessage(sender, message) {
         const p = document.createElement('p');
         if (sender === 'me') {
-            p.innerHTML = `<span class="nickname">[${nickname}]</span>: ${message}`;
+            p.innerHTML = `<span class="nickname">[me]$</span> ${message}`;
         } else if (sender === 'peer') {
-            p.innerHTML = `<span class="nickname">[peer]</span>: ${message}`;
+            p.innerHTML = `<span class="nickname">[peer]$</span> ${message}`;
         } else {
             p.textContent = message;
             p.classList.add('system-message');
@@ -227,42 +244,37 @@ document.addEventListener('DOMContentLoaded', () => {
     async function sendMessage() {
         const messageText = messageInput.value;
         if (messageText.trim() === '' || !dataChannel || dataChannel.readyState !== 'open') return;
-        
         const encryptedMessage = await encryptMessage(cryptoKey, messageText);
         dataChannel.send(encryptedMessage);
-        
         displayMessage('me', messageText);
         messageInput.value = '';
     }
 
-    // === Event Listeners ===
-    joinButton.addEventListener('click', async () => {
-        const roomPassword = roomCodeInput.value;
-        nickname = nicknameInput.value.trim() || 'anon';
-        
-        if (roomPassword.length < 8) {
-            alert('Kode Akses harus minimal 8 karakter.');
-            return;
-        }
-
-        joinButton.disabled = true;
-        chatPrefix.textContent = `[${nickname}]$`;
-
-        try {
-            updateStatus('Mempersiapkan kunci enkripsi...');
-            [cryptoKey, roomId] = await Promise.all([
-                deriveKeyFromPassword(roomPassword),
-                generateRoomId(roomPassword)
-            ]);
-            connectToSignalingServer();
-        } catch (error) {
-            console.error("Gagal memulai:", error);
-            updateStatus('ERROR: Gagal mempersiapkan sesi.');
-            joinButton.disabled = false;
-        }
+    createRoomButton.addEventListener('click', async () => {
+        createRoomButton.disabled = true;
+        creatorView.style.display = 'none';
+        invitationView.style.display = 'block';
+        updateStatus('Membuat kunci enkripsi baru...', true);
+        cryptoKey = await createNewKey();
+        const keyString = await exportKeyToString(cryptoKey);
+        updateStatus('Membuat ID Room unik...', true);
+        roomId = crypto.randomUUID();
+        const inviteLink = `${window.location.origin}${window.location.pathname}#${roomId}:${keyString}`;
+        inviteLinkOutput.value = inviteLink;
+        window.history.pushState(null, '', inviteLink);
+        connectToSignalingServer(true);
     });
 
+    copyLinkButton.addEventListener('click', () => {
+        inviteLinkOutput.select();
+        document.execCommand('copy');
+        copyLinkButton.textContent = '[ Tersalin! ]';
+        setTimeout(() => { copyLinkButton.textContent = '[ Salin Link ]'; }, 2000);
+    });
+    
     messageInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') sendMessage();
     });
+
+    init();
 });
