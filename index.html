@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>P2P Chat [v5 - Final Fix]</title>
+    <title>P2P Chat [v6 - Final]</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
         :root {
@@ -105,7 +105,8 @@
             const sendButton = document.getElementById('send-button');
 
             const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
-            const MQTT_TOPIC_PREFIX = 'webrtc-p2p-chat-app-v5-stable/';
+            // Topic unik untuk memastikan tidak ada tabrakan antar versi
+            const MQTT_TOPIC_PREFIX = 'webrtc-p2p-chat-app-v6-final/';
             const MQTT_TOPIC = MQTT_TOPIC_PREFIX + roomName;
             const STUN_SERVERS = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
@@ -123,13 +124,21 @@
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
             };
 
+            const cleanupPeer = (peerId) => {
+                if (peers[peerId]) {
+                    peers[peerId].pc.close();
+                    delete peers[peerId];
+                }
+            };
+
             const connectToSignaling = () => {
                 addMessage(`Connecting to signaling network...`);
+                // Last Will and Testament: Jika koneksi terputus tiba-tiba, kirim sinyal 'leave'
                 const will = {
                     topic: MQTT_TOPIC,
                     payload: JSON.stringify({ sender: myPeerId, type: 'leave' }),
                     qos: 1,
-                    retain: false // Pesan 'leave' tidak perlu disimpan
+                    retain: false
                 };
                 mqttClient = mqtt.connect(MQTT_BROKER, { will });
 
@@ -137,11 +146,9 @@
                     addMessage(`Connected! Joining room: #${roomName}`);
                     mqttClient.subscribe(MQTT_TOPIC, (err) => {
                         if (!err) {
-                            const payload = { sender: myPeerId, type: 'join' };
-                            // **FIX UTAMA**: Menggunakan 'retain: true' agar pesan join disimpan oleh broker
-                            // untuk diberikan kepada pengguna yang baru bergabung.
-                            const options = { retain: true };
-                            mqttClient.publish(MQTT_TOPIC, JSON.stringify(payload), options);
+                            // Kirim sinyal join yang akan disimpan oleh broker (retain: true)
+                            const payload = { sender: myPeerId, type: 'join', username: myUsername };
+                            mqttClient.publish(MQTT_TOPIC, JSON.stringify(payload), { retain: true });
                             addMessage(`You joined as ${myUsername}. Establishing connections...`);
                         }
                     });
@@ -150,22 +157,24 @@
                 mqttClient.on('message', (topic, message) => {
                     try {
                         const data = JSON.parse(message.toString());
+                        // Abaikan pesan dari diri sendiri
                         if (data.sender === myPeerId) return;
                         handleSignalingData(data);
-                    } catch (e) { console.error('Malformed signal:', e); }
+                    } catch (e) { /* Abaikan pesan yang rusak */ }
                 });
 
-                mqttClient.on('error', (err) => addMessage(`Signaling error: ${err.message}. Please refresh.`, "System", "error"));
+                mqttClient.on('error', (err) => addMessage(`Signaling error: ${err.message}`, "System", "error"));
             };
 
             const handleSignalingData = async (data) => {
                 const peerId = data.sender;
                 switch (data.type) {
                     case 'join':
-                        if (peers[peerId]) return; // Jika sudah ada, abaikan
-                        addMessage(`Peer ${peerId.substr(5, 4)} detected. Initiating connection...`);
-                        // Hanya peer dengan ID lebih besar yang memulai koneksi.
+                        if (peers[peerId]) return; // Jika koneksi sudah ada, abaikan
+                        addMessage(`Peer '${data.username}' (${peerId.substr(5, 4)}) detected.`);
+                        // Hanya peer dengan ID lebih besar (secara abjad) yang memulai koneksi untuk mencegah konflik
                         if (myPeerId > peerId) {
+                            addMessage(`Initiating connection to ${data.username}...`);
                             await createPeerConnection(peerId, true);
                         }
                         break;
@@ -173,7 +182,7 @@
                         await createPeerConnection(peerId, false, data.offer);
                         break;
                     case 'answer':
-                        if (peers[peerId] && peers[peerId].pc.signalingState === 'have-local-offer') {
+                        if (peers[peerId]) {
                            await peers[peerId].pc.setRemoteDescription(new RTCSessionDescription(data.answer));
                         }
                         break;
@@ -184,21 +193,19 @@
                         break;
                     case 'leave':
                         if (peers[peerId]) {
-                            addMessage(`Peer ${peerId.substr(5, 4)} has left.`);
-                            peers[peerId].pc.close();
-                            delete peers[peerId];
+                            addMessage(`Peer '${peers[peerId].username || peerId.substr(5, 4)}' has left.`);
+                            cleanupPeer(peerId);
                         }
-                        // Membersihkan pesan 'retain' dari user yang keluar
-                        mqttClient.publish(MQTT_TOPIC, JSON.stringify({ sender: peerId, type: 'join' }), { retain: true });
                         break;
                 }
             };
             
             const createPeerConnection = async (peerId, isInitiator, offer = null) => {
-                if (peers[peerId]) return;
+                // **FIX PENTING**: Mencegah koneksi ke diri sendiri atau duplikat
+                if (peerId === myPeerId || peers[peerId]) return;
 
                 const pc = new RTCPeerConnection(STUN_SERVERS);
-                peers[peerId] = { pc: pc, dc: null };
+                peers[peerId] = { pc: pc, dc: null, username: 'Unknown' };
 
                 pc.onicecandidate = (event) => {
                     if (event.candidate) {
@@ -207,20 +214,22 @@
                 };
                 
                 pc.onconnectionstatechange = () => {
-                    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
+                    if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
                         if (peers[peerId]) {
-                           addMessage(`Connection with ${peerId.substr(5, 4)} lost.`, "System", "error");
-                           pc.close();
-                           delete peers[peerId];
+                           addMessage(`Connection with ${peers[peerId].username} lost.`, "System", "error");
+                           cleanupPeer(peerId);
                         }
                     }
                 };
 
                 const setupDataChannel = (dc) => {
                     peers[peerId].dc = dc;
-                    dc.onopen = () => addMessage(`✅ Secure connection to ${peerId.substr(5, 4)} established.`);
+                    dc.onopen = () => {
+                        addMessage(`✅ Secure P2P connection established with ${peers[peerId].username}.`);
+                    };
                     dc.onmessage = (event) => {
                         const msg = JSON.parse(event.data);
+                        peers[msg.sender].username = msg.username; // Update username jika berubah
                         addMessage(msg.text, msg.username, 'user');
                     };
                 };
@@ -232,9 +241,7 @@
                     await pc.setLocalDescription(newOffer);
                     sendSignal({ type: 'offer', offer: pc.localDescription, target: peerId });
                 } else { // Is Receiver
-                    pc.ondatachannel = (event) => {
-                        setupDataChannel(event.channel);
-                    };
+                    pc.ondatachannel = (event) => setupDataChannel(event.channel);
                     await pc.setRemoteDescription(new RTCSessionDescription(offer));
                     const answer = await pc.createAnswer();
                     await pc.setLocalDescription(answer);
@@ -249,7 +256,7 @@
 
             const broadcastMessage = (text) => {
                 addMessage(text, myUsername, 'user');
-                const message = { username: myUsername, text: text };
+                const message = { sender: myPeerId, username: myUsername, text: text };
                 const payload = JSON.stringify(message);
                 Object.values(peers).forEach(peer => {
                     if (peer.dc && peer.dc.readyState === 'open') {
@@ -258,6 +265,16 @@
                 });
             };
             
+            // Fungsi untuk membersihkan 'retained message' saat tab ditutup
+            window.addEventListener('beforeunload', (event) => {
+                if (mqttClient && mqttClient.connected) {
+                    // Kirim payload kosong dengan retain: true untuk menghapus pesan 'join' dari broker
+                    mqttClient.publish(MQTT_TOPIC, JSON.stringify({ sender: myPeerId, type: 'leave' }), { retain: false });
+                    const clearPayload = "";
+                    mqttClient.publish(MQTT_TOPIC, clearPayload, { retain: true });
+                }
+            });
+
             sendButton.addEventListener('click', () => {
                 const text = chatInput.value;
                 if (text) {
@@ -268,7 +285,6 @@
 
             chatInput.addEventListener('keydown', (e) => (e.key === 'Enter') && (e.preventDefault(), sendButton.click()));
 
-            // Mulai semuanya
             connectToSignaling();
         }
     </script>
