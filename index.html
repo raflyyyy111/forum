@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Anonymous P2P Chat [v2 - Stabilized]</title>
+    <title>P2P Chat [v4 - Stabilized]</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
         :root {
@@ -73,7 +73,7 @@
 
     <div id="initial-screen">
         <h1>Welcome to Anonymous P2P Chat</h1>
-        <p>To start or join a chat room, add a name to the URL.</p>
+        <p>To start or join a chat room, add a name to the URL hash.</p>
         <p>Example: <strong>your-url.com/#my-secret-room</strong></p>
     </div>
 
@@ -105,13 +105,13 @@
             const sendButton = document.getElementById('send-button');
 
             const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
-            const MQTT_TOPIC_PREFIX = 'webrtc-p2p-chat-app-v3/';
+            const MQTT_TOPIC_PREFIX = 'webrtc-p2p-chat-app-v4-stable/';
             const MQTT_TOPIC = MQTT_TOPIC_PREFIX + roomName;
             const STUN_SERVERS = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
             const myPeerId = 'peer_' + Math.random().toString(36).substr(2, 9);
             const myUsername = 'User-' + Math.random().toString(36).substr(2, 4).toUpperCase();
-            const peers = {}; // State: { peerConnection, dataChannel, iceCandidateQueue }
+            const peers = {}; // State: { pc, dc, iceQueue }
             let mqttClient = null;
 
             const addMessage = (text, sender = "System", type = "system") => {
@@ -149,7 +149,7 @@
                         const data = JSON.parse(message.toString());
                         if (data.sender === myPeerId) return;
                         handleSignalingData(data);
-                    } catch(e) { /* ignore malformed messages */ }
+                    } catch (e) { console.error('Malformed signal:', e); }
                 });
 
                 mqttClient.on('error', (err) => addMessage(`Signaling error: ${err.message}. Please refresh.`, "System", "error"));
@@ -159,88 +159,85 @@
                 const peerId = data.sender;
                 switch (data.type) {
                     case 'join':
-                        // **FIX KESALAHAN FATAL**: Mencegah "glare".
-                        // Hanya peer dengan ID lebih besar yang memulai koneksi.
                         if (myPeerId > peerId) {
                             addMessage(`Peer ${peerId.substr(5, 4)} detected. Initiating connection...`);
-                            createPeerConnection(peerId);
+                            createPeerConnection(peerId, true);
                         }
                         break;
                     case 'offer':
                         addMessage(`Receiving connection offer from ${peerId.substr(5, 4)}...`);
-                        await createPeerConnection(peerId, data.offer);
+                        await createPeerConnection(peerId, false, data.offer);
                         break;
                     case 'answer':
-                        await peers[peerId].peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-                        await processIceCandidateQueue(peerId);
+                        if (peers[peerId]) {
+                           await peers[peerId].pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                        }
                         break;
                     case 'candidate':
-                        // **FIX KESALAHAN KECIL**: Menangani kandidat yang datang terlalu dini.
-                        if (peers[peerId] && peers[peerId].peerConnection.remoteDescription) {
-                            await peers[peerId].peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-                        } else {
-                            if (!peers[peerId]) peers[peerId] = { iceCandidateQueue: [] };
-                            peers[peerId].iceCandidateQueue.push(data.candidate);
+                        if (peers[peerId]) {
+                            await peers[peerId].pc.addIceCandidate(new RTCIceCandidate(data.candidate));
                         }
                         break;
                     case 'leave':
                         if (peers[peerId]) {
                             addMessage(`Peer ${peerId.substr(5, 4)} has left.`);
-                            peers[peerId].peerConnection.close();
+                            peers[peerId].pc.close();
                             delete peers[peerId];
                         }
                         break;
                 }
             };
             
-            const createPeerConnection = async (peerId, offer = null) => {
+            const createPeerConnection = async (peerId, isInitiator, offer = null) => {
                 if (peers[peerId]) return;
 
-                peers[peerId] = { peerConnection: new RTCPeerConnection(STUN_SERVERS), iceCandidateQueue: [] };
-                const pc = peers[peerId].peerConnection;
+                const pc = new RTCPeerConnection(STUN_SERVERS);
+                peers[peerId] = { pc: pc, dc: null };
 
                 pc.onicecandidate = (event) => {
                     if (event.candidate) {
                         sendSignal({ type: 'candidate', candidate: event.candidate, target: peerId });
                     }
                 };
-
-                pc.ondatachannel = (event) => {
-                    peers[peerId].dataChannel = event.channel;
-                    setupDataChannel(peerId, event.channel);
+                
+                pc.onconnectionstatechange = () => {
+                    if (pc.connectionState === 'failed') {
+                        addMessage(`Connection with ${peerId.substr(5, 4)} failed.`, "System", "error");
+                        pc.close();
+                        delete peers[peerId];
+                    }
                 };
 
-                if (offer) { // Jika kita menerima offer
-                    await pc.setRemoteDescription(new RTCSessionDescription(offer));
-                    await processIceCandidateQueue(peerId);
-                    const answer = await pc.createAnswer();
-                    await pc.setLocalDescription(answer);
-                    sendSignal({ type: 'answer', answer, target: peerId });
-                } else { // Jika kita adalah inisiator
-                    const dataChannel = pc.createDataChannel('chat');
-                    setupDataChannel(peerId, dataChannel);
+                const setupDataChannel = (dc) => {
+                    peers[peerId].dc = dc;
+                    dc.onopen = () => addMessage(`✅ Secure P2P connection established with ${peerId.substr(5, 4)}.`);
+                    dc.onmessage = (event) => {
+                        const msg = JSON.parse(event.data);
+                        addMessage(msg.text, msg.username, 'user');
+                    };
+                    dc.onclose = () => {
+                        // This event is often handled by 'leave' signal, but good as a fallback.
+                        if (peers[peerId]) {
+                           addMessage(`Connection with ${peerId.substr(5, 4)} closed.`);
+                           delete peers[peerId];
+                        }
+                    };
+                };
+
+                if (isInitiator) {
+                    const dc = pc.createDataChannel('chat');
+                    setupDataChannel(dc);
                     const newOffer = await pc.createOffer();
                     await pc.setLocalDescription(newOffer);
-                    sendSignal({ type: 'offer', offer: newOffer, target: peerId });
-                }
-            };
-
-            const setupDataChannel = (peerId, dc) => {
-                dc.onopen = () => addMessage(`✅ Secure P2P connection established with ${peerId.substr(5, 4)}.`);
-                dc.onmessage = (event) => {
-                    const msg = JSON.parse(event.data);
-                    addMessage(msg.text, msg.username, 'user');
-                };
-                dc.onclose = () => {
-                    addMessage(`Connection with ${peerId.substr(5, 4)} lost.`, "System", "error");
-                };
-            };
-            
-            const processIceCandidateQueue = async (peerId) => {
-                const queue = peers[peerId].iceCandidateQueue;
-                while(queue.length > 0) {
-                    const candidate = queue.shift();
-                    await peers[peerId].peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                    sendSignal({ type: 'offer', offer: pc.localDescription, target: peerId });
+                } else { // Is Receiver
+                    pc.ondatachannel = (event) => {
+                        setupDataChannel(event.channel);
+                    };
+                    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+                    const answer = await pc.createAnswer();
+                    await pc.setLocalDescription(answer);
+                    sendSignal({ type: 'answer', answer: pc.localDescription, target: peerId });
                 }
             };
 
@@ -252,9 +249,10 @@
             const broadcastMessage = (text) => {
                 addMessage(text, myUsername, 'user');
                 const message = { username: myUsername, text: text };
+                const payload = JSON.stringify(message);
                 Object.values(peers).forEach(peer => {
-                    if (peer.dataChannel && peer.dataChannel.readyState === 'open') {
-                        peer.dataChannel.send(JSON.stringify(message));
+                    if (peer.dc && peer.dc.readyState === 'open') {
+                        peer.dc.send(payload);
                     }
                 });
             };
@@ -269,6 +267,7 @@
 
             chatInput.addEventListener('keydown', (e) => (e.key === 'Enter') && (e.preventDefault(), sendButton.click()));
 
+            // Mulai semuanya
             connectToSignaling();
         }
     </script>
