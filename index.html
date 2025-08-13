@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Anonymous P2P Chat</title>
+    <title>Anonymous P2P Chat [v2 - Stabilized]</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
         :root {
@@ -11,6 +11,7 @@
             --text-color: #00FF41;
             --accent-color: #33FF77;
             --meta-color: #888888;
+            --error-color: #FF4136;
             --font-family: 'Consolas', 'Menlo', 'Courier New', monospace;
         }
         body {
@@ -37,20 +38,11 @@
             margin-bottom: 1rem;
             word-wrap: break-word;
         }
-        .message {
-            margin-bottom: 0.5rem;
-        }
-        .message .sender {
-            font-weight: bold;
-            color: var(--accent-color);
-        }
-        .message.system .content {
-            color: var(--meta-color);
-            font-style: italic;
-        }
-        #input-container {
-            display: flex;
-        }
+        .message { margin-bottom: 0.5rem; }
+        .message .sender { font-weight: bold; color: var(--accent-color); }
+        .message.system .content { color: var(--meta-color); font-style: italic; }
+        .message.error .content { color: var(--error-color); font-style: italic; }
+        #input-container { display: flex; }
         #chat-input {
             flex-grow: 1;
             background-color: transparent;
@@ -62,9 +54,7 @@
             padding: 0.5rem;
             outline: none;
         }
-        #chat-input:focus {
-            border-bottom-color: var(--text-color);
-        }
+        #chat-input:focus { border-bottom-color: var(--text-color); }
         #send-button {
             background-color: var(--accent-color);
             color: var(--bg-color);
@@ -75,13 +65,8 @@
             font-family: var(--font-family);
             font-weight: bold;
         }
-        #initial-screen {
-            text-align: center;
-            padding-top: 20vh;
-        }
-        .hidden {
-            display: none;
-        }
+        #initial-screen { text-align: center; padding-top: 20vh; }
+        .hidden { display: none; }
     </style>
 </head>
 <body>
@@ -119,38 +104,39 @@
             const chatInput = document.getElementById('chat-input');
             const sendButton = document.getElementById('send-button');
 
-            // --- Konfigurasi ---
             const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
-            const MQTT_TOPIC_PREFIX = 'webrtc-p2p-chat-app-v2/';
+            const MQTT_TOPIC_PREFIX = 'webrtc-p2p-chat-app-v3/';
             const MQTT_TOPIC = MQTT_TOPIC_PREFIX + roomName;
-            const STUN_SERVERS = {
-                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-            };
+            const STUN_SERVERS = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-            // --- Identitas & State ---
             const myPeerId = 'peer_' + Math.random().toString(36).substr(2, 9);
             const myUsername = 'User-' + Math.random().toString(36).substr(2, 4).toUpperCase();
-            const peers = {}; // Menyimpan semua koneksi peer { peerId: peerConnection }
+            const peers = {}; // State: { peerConnection, dataChannel, iceCandidateQueue }
             let mqttClient = null;
 
             const addMessage = (text, sender = "System", type = "system") => {
                 const msgDiv = document.createElement('div');
                 msgDiv.className = `message ${type}`;
-                const senderSpan = `<span class="sender">${sender}: </span>`;
-                msgDiv.innerHTML = `<span class="content">${sender ? senderSpan : ''}${text}</span>`;
+                const senderSpan = sender ? `<span class="sender">${sender}: </span>` : '';
+                msgDiv.innerHTML = `${senderSpan}<span class="content">${text}</span>`;
                 messagesDiv.appendChild(msgDiv);
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
             };
 
             const connectToSignaling = () => {
                 addMessage(`Connecting to signaling network...`);
-                mqttClient = mqtt.connect(MQTT_BROKER);
+                const will = {
+                    topic: MQTT_TOPIC,
+                    payload: JSON.stringify({ sender: myPeerId, type: 'leave' }),
+                    qos: 1,
+                    retain: false
+                };
+                mqttClient = mqtt.connect(MQTT_BROKER, { will });
 
                 mqttClient.on('connect', () => {
                     addMessage(`Connected! Joining room: #${roomName}`);
                     mqttClient.subscribe(MQTT_TOPIC, (err) => {
                         if (!err) {
-                            // Kirim sinyal join ke semua orang di room
                             const payload = { sender: myPeerId, type: 'join' };
                             mqttClient.publish(MQTT_TOPIC, JSON.stringify(payload));
                             addMessage(`You joined as ${myUsername}. Waiting for peers...`);
@@ -159,83 +145,105 @@
                 });
 
                 mqttClient.on('message', (topic, message) => {
-                    const data = JSON.parse(message.toString());
-                    if (data.sender === myPeerId) return; // Abaikan pesan dari diri sendiri
-                    handleSignalingData(data);
+                    try {
+                        const data = JSON.parse(message.toString());
+                        if (data.sender === myPeerId) return;
+                        handleSignalingData(data);
+                    } catch(e) { /* ignore malformed messages */ }
                 });
 
-                mqttClient.on('error', (err) => {
-                    addMessage(`Signaling error: ${err.message}. Please refresh.`);
-                });
+                mqttClient.on('error', (err) => addMessage(`Signaling error: ${err.message}. Please refresh.`, "System", "error"));
             };
 
             const handleSignalingData = async (data) => {
+                const peerId = data.sender;
                 switch (data.type) {
                     case 'join':
-                        // Peer baru bergabung, buat koneksi baru untuknya dan kirim offer
-                        addMessage(`Peer ${data.sender.substr(5, 4)} has joined.`);
-                        createPeerConnection(data.sender, true);
+                        // **FIX KESALAHAN FATAL**: Mencegah "glare".
+                        // Hanya peer dengan ID lebih besar yang memulai koneksi.
+                        if (myPeerId > peerId) {
+                            addMessage(`Peer ${peerId.substr(5, 4)} detected. Initiating connection...`);
+                            createPeerConnection(peerId);
+                        }
                         break;
                     case 'offer':
-                        // Menerima offer dari peer lain
-                        await createPeerConnection(data.sender, false);
-                        await peers[data.sender].peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
-                        const answer = await peers[data.sender].peerConnection.createAnswer();
-                        await peers[data.sender].peerConnection.setLocalDescription(answer);
-                        sendSignal({ type: 'answer', answer, target: data.sender });
+                        addMessage(`Receiving connection offer from ${peerId.substr(5, 4)}...`);
+                        await createPeerConnection(peerId, data.offer);
                         break;
                     case 'answer':
-                        // Menerima answer dari offer yang kita kirim
-                        await peers[data.sender].peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                        await peers[peerId].peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                        await processIceCandidateQueue(peerId);
                         break;
                     case 'candidate':
-                        // Menerima ICE candidate
-                        if(peers[data.sender] && peers[data.sender].peerConnection.remoteDescription) {
-                            await peers[data.sender].peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                        // **FIX KESALAHAN KECIL**: Menangani kandidat yang datang terlalu dini.
+                        if (peers[peerId] && peers[peerId].peerConnection.remoteDescription) {
+                            await peers[peerId].peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                        } else {
+                            if (!peers[peerId]) peers[peerId] = { iceCandidateQueue: [] };
+                            peers[peerId].iceCandidateQueue.push(data.candidate);
+                        }
+                        break;
+                    case 'leave':
+                        if (peers[peerId]) {
+                            addMessage(`Peer ${peerId.substr(5, 4)} has left.`);
+                            peers[peerId].peerConnection.close();
+                            delete peers[peerId];
                         }
                         break;
                 }
             };
             
-            const createPeerConnection = (peerId, isInitiator) => {
+            const createPeerConnection = async (peerId, offer = null) => {
                 if (peers[peerId]) return;
 
-                const peerConnection = new RTCPeerConnection(STUN_SERVERS);
-                peers[peerId] = { peerConnection };
+                peers[peerId] = { peerConnection: new RTCPeerConnection(STUN_SERVERS), iceCandidateQueue: [] };
+                const pc = peers[peerId].peerConnection;
 
-                peerConnection.onicecandidate = (event) => {
+                pc.onicecandidate = (event) => {
                     if (event.candidate) {
                         sendSignal({ type: 'candidate', candidate: event.candidate, target: peerId });
                     }
                 };
-                
-                if (isInitiator) {
-                    const dataChannel = peerConnection.createDataChannel('chat');
+
+                pc.ondatachannel = (event) => {
+                    peers[peerId].dataChannel = event.channel;
+                    setupDataChannel(peerId, event.channel);
+                };
+
+                if (offer) { // Jika kita menerima offer
+                    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+                    await processIceCandidateQueue(peerId);
+                    const answer = await pc.createAnswer();
+                    await pc.setLocalDescription(answer);
+                    sendSignal({ type: 'answer', answer, target: peerId });
+                } else { // Jika kita adalah inisiator
+                    const dataChannel = pc.createDataChannel('chat');
                     setupDataChannel(peerId, dataChannel);
-                    
-                    peerConnection.createOffer()
-                        .then(offer => peerConnection.setLocalDescription(offer))
-                        .then(() => {
-                            sendSignal({ type: 'offer', offer: peerConnection.localDescription, target: peerId });
-                        });
-                } else {
-                    peerConnection.ondatachannel = (event) => {
-                        setupDataChannel(peerId, event.channel);
-                    };
+                    const newOffer = await pc.createOffer();
+                    await pc.setLocalDescription(newOffer);
+                    sendSignal({ type: 'offer', offer: newOffer, target: peerId });
                 }
             };
 
-            const setupDataChannel = (peerId, dataChannel) => {
-                peers[peerId].dataChannel = dataChannel;
-                dataChannel.onopen = () => {
-                    addMessage(`Connection with peer ${peerId.substr(5, 4)} established.`);
-                };
-                dataChannel.onmessage = (event) => {
+            const setupDataChannel = (peerId, dc) => {
+                dc.onopen = () => addMessage(`✅ Secure P2P connection established with ${peerId.substr(5, 4)}.`);
+                dc.onmessage = (event) => {
                     const msg = JSON.parse(event.data);
                     addMessage(msg.text, msg.username, 'user');
                 };
+                dc.onclose = () => {
+                    addMessage(`Connection with ${peerId.substr(5, 4)} lost.`, "System", "error");
+                };
             };
             
+            const processIceCandidateQueue = async (peerId) => {
+                const queue = peers[peerId].iceCandidateQueue;
+                while(queue.length > 0) {
+                    const candidate = queue.shift();
+                    await peers[peerId].peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                }
+            };
+
             const sendSignal = (data) => {
                 const payload = { sender: myPeerId, ...data };
                 mqttClient.publish(MQTT_TOPIC, JSON.stringify(payload));
@@ -259,14 +267,8 @@
                 }
             });
 
-            chatInput.addEventListener('keydown', (event) => {
-                if (event.key === 'Enter') {
-                    event.preventDefault();
-                    sendButton.click();
-                }
-            });
+            chatInput.addEventListener('keydown', (e) => (e.key === 'Enter') && (e.preventDefault(), sendButton.click()));
 
-            // Mulai semuanya
             connectToSignaling();
         }
     </script>
