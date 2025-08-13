@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>P2P Chat [v6 - Final]</title>
+    <title>P2P Chat [v9 - Professional Engine]</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <script src="https://unpkg.com/simple-peer/simplepeer.min.js"></script>
     <style>
         :root {
             --bg-color: #0D0D0D;
@@ -87,32 +88,26 @@
 
     <script>
         const roomName = window.location.hash.substring(1);
-        const initialScreen = document.getElementById('initial-screen');
-        const chatContainer = document.getElementById('chat-container');
-
         if (!roomName) {
-            chatContainer.classList.add('hidden');
-            initialScreen.classList.remove('hidden');
+            document.getElementById('chat-container').classList.add('hidden');
+            document.getElementById('initial-screen').classList.remove('hidden');
         } else {
-            initialScreen.classList.add('hidden');
-            chatContainer.classList.remove('hidden');
-            initializeChat();
+            initializeChat(roomName);
         }
 
-        function initializeChat() {
+        function initializeChat(room) {
             const messagesDiv = document.getElementById('messages');
             const chatInput = document.getElementById('chat-input');
             const sendButton = document.getElementById('send-button');
+            document.getElementById('initial-screen').classList.add('hidden');
+            document.getElementById('chat-container').classList.remove('hidden');
 
             const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
-            // Topic unik untuk memastikan tidak ada tabrakan antar versi
-            const MQTT_TOPIC_PREFIX = 'webrtc-p2p-chat-app-v6-final/';
-            const MQTT_TOPIC = MQTT_TOPIC_PREFIX + roomName;
-            const STUN_SERVERS = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
-
-            const myPeerId = 'peer_' + Math.random().toString(36).substr(2, 9);
-            const myUsername = 'User-' + Math.random().toString(36).substr(2, 4).toUpperCase();
-            const peers = {};
+            const TOPIC = `webrtc-chat-v9/${room}`;
+            
+            const myPeerId = 'peer_' + Math.random().toString(36).substring(2, 11);
+            const myUsername = 'User-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+            const peers = {}; // Menyimpan semua koneksi peer { peerId: simplePeerInstance }
             let mqttClient = null;
 
             const addMessage = (text, sender = "System", type = "system") => {
@@ -124,166 +119,122 @@
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
             };
 
-            const cleanupPeer = (peerId) => {
-                if (peers[peerId]) {
-                    peers[peerId].pc.close();
-                    delete peers[peerId];
-                }
-            };
-
             const connectToSignaling = () => {
                 addMessage(`Connecting to signaling network...`);
-                // Last Will and Testament: Jika koneksi terputus tiba-tiba, kirim sinyal 'leave'
-                const will = {
-                    topic: MQTT_TOPIC,
-                    payload: JSON.stringify({ sender: myPeerId, type: 'leave' }),
-                    qos: 1,
-                    retain: false
-                };
-                mqttClient = mqtt.connect(MQTT_BROKER, { will });
+                mqttClient = mqtt.connect(MQTT_BROKER);
 
                 mqttClient.on('connect', () => {
-                    addMessage(`Connected! Joining room: #${roomName}`);
-                    mqttClient.subscribe(MQTT_TOPIC, (err) => {
+                    addMessage(`Connected! Joining room: #${room}`);
+                    mqttClient.subscribe(TOPIC, (err) => {
                         if (!err) {
-                            // Kirim sinyal join yang akan disimpan oleh broker (retain: true)
-                            const payload = { sender: myPeerId, type: 'join', username: myUsername };
-                            mqttClient.publish(MQTT_TOPIC, JSON.stringify(payload), { retain: true });
-                            addMessage(`You joined as ${myUsername}. Establishing connections...`);
+                            // Kirim sinyal 'join' ke semua orang
+                            sendSignal({ type: 'join' });
+                            addMessage(`You joined as ${myUsername}.`);
                         }
                     });
                 });
 
                 mqttClient.on('message', (topic, message) => {
-                    try {
-                        const data = JSON.parse(message.toString());
-                        // Abaikan pesan dari diri sendiri
-                        if (data.sender === myPeerId) return;
-                        handleSignalingData(data);
-                    } catch (e) { /* Abaikan pesan yang rusak */ }
+                    const data = JSON.parse(message.toString());
+                    if (data.sender === myPeerId) return;
+
+                    // Jika ada peer baru join, dan kita adalah 'inisiator', mulai koneksi
+                    if (data.type === 'join' && myPeerId > data.sender) {
+                        createPeer(data.sender, true);
+                    }
+                    // Jika kita menerima sinyal dari peer lain, teruskan ke simple-peer
+                    if (data.type === 'signal' && data.target === myPeerId) {
+                        if (peers[data.sender]) {
+                            peers[data.sender].signal(data.signal);
+                        } else {
+                            // Jika kita belum punya koneksi, buat sebagai non-inisiator
+                            createPeer(data.sender, false);
+                            peers[data.sender].signal(data.signal);
+                        }
+                    }
                 });
 
                 mqttClient.on('error', (err) => addMessage(`Signaling error: ${err.message}`, "System", "error"));
             };
 
-            const handleSignalingData = async (data) => {
-                const peerId = data.sender;
-                switch (data.type) {
-                    case 'join':
-                        if (peers[peerId]) return; // Jika koneksi sudah ada, abaikan
-                        addMessage(`Peer '${data.username}' (${peerId.substr(5, 4)}) detected.`);
-                        // Hanya peer dengan ID lebih besar (secara abjad) yang memulai koneksi untuk mencegah konflik
-                        if (myPeerId > peerId) {
-                            addMessage(`Initiating connection to ${data.username}...`);
-                            await createPeerConnection(peerId, true);
-                        }
-                        break;
-                    case 'offer':
-                        await createPeerConnection(peerId, false, data.offer);
-                        break;
-                    case 'answer':
-                        if (peers[peerId]) {
-                           await peers[peerId].pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-                        }
-                        break;
-                    case 'candidate':
-                        if (peers[peerId] && peers[peerId].pc.remoteDescription) {
-                            await peers[peerId].pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-                        }
-                        break;
-                    case 'leave':
-                        if (peers[peerId]) {
-                            addMessage(`Peer '${peers[peerId].username || peerId.substr(5, 4)}' has left.`);
-                            cleanupPeer(peerId);
-                        }
-                        break;
-                }
-            };
-            
-            const createPeerConnection = async (peerId, isInitiator, offer = null) => {
-                // **FIX PENTING**: Mencegah koneksi ke diri sendiri atau duplikat
-                if (peerId === myPeerId || peers[peerId]) return;
-
-                const pc = new RTCPeerConnection(STUN_SERVERS);
-                peers[peerId] = { pc: pc, dc: null, username: 'Unknown' };
-
-                pc.onicecandidate = (event) => {
-                    if (event.candidate) {
-                        sendSignal({ type: 'candidate', candidate: event.candidate, target: peerId });
-                    }
-                };
+            const createPeer = (peerId, isInitiator) => {
+                if (peers[peerId]) return;
                 
-                pc.onconnectionstatechange = () => {
-                    if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
-                        if (peers[peerId]) {
-                           addMessage(`Connection with ${peers[peerId].username} lost.`, "System", "error");
-                           cleanupPeer(peerId);
-                        }
-                    }
-                };
+                addMessage(`Establishing secure connection with a new peer...`);
+                const peer = new SimplePeer({
+                    initiator: isInitiator,
+                    trickle: false, // Ini menyederhanakan proses sinyal secara drastis
+                });
 
-                const setupDataChannel = (dc) => {
-                    peers[peerId].dc = dc;
-                    dc.onopen = () => {
-                        addMessage(`✅ Secure P2P connection established with ${peers[peerId].username}.`);
-                    };
-                    dc.onmessage = (event) => {
-                        const msg = JSON.parse(event.data);
-                        peers[msg.sender].username = msg.username; // Update username jika berubah
+                peer.on('signal', (signal) => {
+                    sendSignal({ type: 'signal', signal, target: peerId });
+                });
+
+                peer.on('connect', () => {
+                    addMessage(`✅ Secure P2P connection established!`);
+                    peer.send(JSON.stringify({ type: 'handshake', username: myUsername }));
+                });
+
+                peer.on('data', (data) => {
+                    const msg = JSON.parse(data.toString());
+                    if (msg.type === 'handshake') {
+                        addMessage(`Peer identified as '${msg.username}'.`);
+                    } else if (msg.type === 'chat') {
                         addMessage(msg.text, msg.username, 'user');
-                    };
-                };
+                    }
+                });
 
-                if (isInitiator) {
-                    const dc = pc.createDataChannel('chat');
-                    setupDataChannel(dc);
-                    const newOffer = await pc.createOffer();
-                    await pc.setLocalDescription(newOffer);
-                    sendSignal({ type: 'offer', offer: pc.localDescription, target: peerId });
-                } else { // Is Receiver
-                    pc.ondatachannel = (event) => setupDataChannel(event.channel);
-                    await pc.setRemoteDescription(new RTCSessionDescription(offer));
-                    const answer = await pc.createAnswer();
-                    await pc.setLocalDescription(answer);
-                    sendSignal({ type: 'answer', answer: pc.localDescription, target: peerId });
-                }
+                peer.on('close', () => {
+                    addMessage(`Connection with a peer was closed.`);
+                    delete peers[peerId];
+                });
+
+                peer.on('error', (err) => {
+                    addMessage(`Connection error: ${err.message}`, "System", "error");
+                    if (peers[peerId]) {
+                       peers[peerId].destroy();
+                       delete peers[peerId];
+                    }
+                });
+
+                peers[peerId] = peer;
             };
 
             const sendSignal = (data) => {
-                const payload = { sender: myPeerId, ...data };
-                mqttClient.publish(MQTT_TOPIC, JSON.stringify(payload));
+                const payload = { ...data, sender: myPeerId };
+                mqttClient.publish(TOPIC, JSON.stringify(payload));
             };
 
             const broadcastMessage = (text) => {
                 addMessage(text, myUsername, 'user');
-                const message = { sender: myPeerId, username: myUsername, text: text };
+                const message = { type: 'chat', username: myUsername, text: text };
                 const payload = JSON.stringify(message);
                 Object.values(peers).forEach(peer => {
-                    if (peer.dc && peer.dc.readyState === 'open') {
-                        peer.dc.send(payload);
+                    if (peer.connected) {
+                        peer.send(payload);
                     }
                 });
             };
             
-            // Fungsi untuk membersihkan 'retained message' saat tab ditutup
-            window.addEventListener('beforeunload', (event) => {
-                if (mqttClient && mqttClient.connected) {
-                    // Kirim payload kosong dengan retain: true untuk menghapus pesan 'join' dari broker
-                    mqttClient.publish(MQTT_TOPIC, JSON.stringify({ sender: myPeerId, type: 'leave' }), { retain: false });
-                    const clearPayload = "";
-                    mqttClient.publish(MQTT_TOPIC, clearPayload, { retain: true });
-                }
+            window.addEventListener('beforeunload', () => {
+                // simple-peer akan otomatis menutup koneksi, kita hanya perlu keluar dari MQTT
+                if (mqttClient) mqttClient.end();
             });
 
             sendButton.addEventListener('click', () => {
-                const text = chatInput.value;
-                if (text) {
-                    broadcastMessage(text);
+                if (chatInput.value) {
+                    broadcastMessage(chatInput.value);
                     chatInput.value = '';
                 }
             });
 
-            chatInput.addEventListener('keydown', (e) => (e.key === 'Enter') && (e.preventDefault(), sendButton.click()));
+            chatInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && chatInput.value) {
+                    e.preventDefault();
+                    broadcastMessage(chatInput.value);
+                    chatInput.value = '';
+                }
+            });
 
             connectToSignaling();
         }
