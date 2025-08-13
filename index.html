@@ -3,35 +3,272 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MRV X [v4.0 PEERJS]</title>
-    <link rel="stylesheet" href="style.css">
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <title>Anonymous P2P Chat</title>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #0D0D0D;
+            --text-color: #00FF41;
+            --accent-color: #33FF77;
+            --meta-color: #888888;
+            --font-family: 'Consolas', 'Menlo', 'Courier New', monospace;
+        }
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: var(--font-family);
+            margin: 0;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        #chat-container {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            border: 1px solid var(--accent-color);
+            padding: 1rem;
+        }
+        #messages {
+            flex-grow: 1;
+            overflow-y: auto;
+            margin-bottom: 1rem;
+            word-wrap: break-word;
+        }
+        .message {
+            margin-bottom: 0.5rem;
+        }
+        .message .sender {
+            font-weight: bold;
+            color: var(--accent-color);
+        }
+        .message.system .content {
+            color: var(--meta-color);
+            font-style: italic;
+        }
+        #input-container {
+            display: flex;
+        }
+        #chat-input {
+            flex-grow: 1;
+            background-color: transparent;
+            border: none;
+            border-bottom: 1px solid var(--accent-color);
+            color: var(--text-color);
+            font-family: var(--font-family);
+            font-size: 1rem;
+            padding: 0.5rem;
+            outline: none;
+        }
+        #chat-input:focus {
+            border-bottom-color: var(--text-color);
+        }
+        #send-button {
+            background-color: var(--accent-color);
+            color: var(--bg-color);
+            border: none;
+            padding: 0.5rem 1rem;
+            margin-left: 1rem;
+            cursor: pointer;
+            font-family: var(--font-family);
+            font-weight: bold;
+        }
+        #initial-screen {
+            text-align: center;
+            padding-top: 20vh;
+        }
+        .hidden {
+            display: none;
+        }
+    </style>
 </head>
 <body>
-    <div class="container">
-        <h1>MRV X <span>v4.0</span></h1>
-        
-        <div class="connection-box">
-            <h2>1. Status Koneksi</h2>
-            <p>ID Unik Anda: <strong id="my-id">Memuat...</strong></p>
-            <p>Status: <span id="status">Inisialisasi...</span></p>
-        </div>
 
-        <div class="connection-box">
-            <h2>2. Hubungkan ke Teman</h2>
-            <input type="text" id="peer-id-input" placeholder="Masukkan ID teman Anda">
-            <button id="connect-button">Hubungkan</button>
-        </div>
+    <div id="initial-screen">
+        <h1>Welcome to Anonymous P2P Chat</h1>
+        <p>To start or join a chat room, add a name to the URL.</p>
+        <p>Example: <strong>your-url.com/#my-secret-room</strong></p>
+    </div>
 
-        <div id="chat-box" class="chat-box" style="display: none;">
-            <h2>3. Sesi Aman</h2>
-            <input type="password" id="secret-key-input" placeholder="Masukkan & bagikan kata sandi rahasia...">
-            <button id="start-secure-button">Mulai Enkripsi</button>
-            <div id="chat-log"></div>
-            <textarea id="message-input" placeholder="Ketik pesan terenkripsi..." disabled></textarea>
-            <button id="send-button" disabled>Kirim</button>
+    <div id="chat-container" class="hidden">
+        <div id="messages"></div>
+        <div id="input-container">
+            <input type="text" id="chat-input" placeholder="Type message and press Enter...">
+            <button id="send-button">SEND</button>
         </div>
     </div>
-    <script src="main.js"></script>
+
+    <script>
+        const roomName = window.location.hash.substring(1);
+        const initialScreen = document.getElementById('initial-screen');
+        const chatContainer = document.getElementById('chat-container');
+
+        if (!roomName) {
+            chatContainer.classList.add('hidden');
+            initialScreen.classList.remove('hidden');
+        } else {
+            initialScreen.classList.add('hidden');
+            chatContainer.classList.remove('hidden');
+            initializeChat();
+        }
+
+        function initializeChat() {
+            const messagesDiv = document.getElementById('messages');
+            const chatInput = document.getElementById('chat-input');
+            const sendButton = document.getElementById('send-button');
+
+            // --- Konfigurasi ---
+            const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
+            const MQTT_TOPIC_PREFIX = 'webrtc-p2p-chat-app-v2/';
+            const MQTT_TOPIC = MQTT_TOPIC_PREFIX + roomName;
+            const STUN_SERVERS = {
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            };
+
+            // --- Identitas & State ---
+            const myPeerId = 'peer_' + Math.random().toString(36).substr(2, 9);
+            const myUsername = 'User-' + Math.random().toString(36).substr(2, 4).toUpperCase();
+            const peers = {}; // Menyimpan semua koneksi peer { peerId: peerConnection }
+            let mqttClient = null;
+
+            const addMessage = (text, sender = "System", type = "system") => {
+                const msgDiv = document.createElement('div');
+                msgDiv.className = `message ${type}`;
+                const senderSpan = `<span class="sender">${sender}: </span>`;
+                msgDiv.innerHTML = `<span class="content">${sender ? senderSpan : ''}${text}</span>`;
+                messagesDiv.appendChild(msgDiv);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            };
+
+            const connectToSignaling = () => {
+                addMessage(`Connecting to signaling network...`);
+                mqttClient = mqtt.connect(MQTT_BROKER);
+
+                mqttClient.on('connect', () => {
+                    addMessage(`Connected! Joining room: #${roomName}`);
+                    mqttClient.subscribe(MQTT_TOPIC, (err) => {
+                        if (!err) {
+                            // Kirim sinyal join ke semua orang di room
+                            const payload = { sender: myPeerId, type: 'join' };
+                            mqttClient.publish(MQTT_TOPIC, JSON.stringify(payload));
+                            addMessage(`You joined as ${myUsername}. Waiting for peers...`);
+                        }
+                    });
+                });
+
+                mqttClient.on('message', (topic, message) => {
+                    const data = JSON.parse(message.toString());
+                    if (data.sender === myPeerId) return; // Abaikan pesan dari diri sendiri
+                    handleSignalingData(data);
+                });
+
+                mqttClient.on('error', (err) => {
+                    addMessage(`Signaling error: ${err.message}. Please refresh.`);
+                });
+            };
+
+            const handleSignalingData = async (data) => {
+                switch (data.type) {
+                    case 'join':
+                        // Peer baru bergabung, buat koneksi baru untuknya dan kirim offer
+                        addMessage(`Peer ${data.sender.substr(5, 4)} has joined.`);
+                        createPeerConnection(data.sender, true);
+                        break;
+                    case 'offer':
+                        // Menerima offer dari peer lain
+                        await createPeerConnection(data.sender, false);
+                        await peers[data.sender].peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                        const answer = await peers[data.sender].peerConnection.createAnswer();
+                        await peers[data.sender].peerConnection.setLocalDescription(answer);
+                        sendSignal({ type: 'answer', answer, target: data.sender });
+                        break;
+                    case 'answer':
+                        // Menerima answer dari offer yang kita kirim
+                        await peers[data.sender].peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                        break;
+                    case 'candidate':
+                        // Menerima ICE candidate
+                        if(peers[data.sender] && peers[data.sender].peerConnection.remoteDescription) {
+                            await peers[data.sender].peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                        }
+                        break;
+                }
+            };
+            
+            const createPeerConnection = (peerId, isInitiator) => {
+                if (peers[peerId]) return;
+
+                const peerConnection = new RTCPeerConnection(STUN_SERVERS);
+                peers[peerId] = { peerConnection };
+
+                peerConnection.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        sendSignal({ type: 'candidate', candidate: event.candidate, target: peerId });
+                    }
+                };
+                
+                if (isInitiator) {
+                    const dataChannel = peerConnection.createDataChannel('chat');
+                    setupDataChannel(peerId, dataChannel);
+                    
+                    peerConnection.createOffer()
+                        .then(offer => peerConnection.setLocalDescription(offer))
+                        .then(() => {
+                            sendSignal({ type: 'offer', offer: peerConnection.localDescription, target: peerId });
+                        });
+                } else {
+                    peerConnection.ondatachannel = (event) => {
+                        setupDataChannel(peerId, event.channel);
+                    };
+                }
+            };
+
+            const setupDataChannel = (peerId, dataChannel) => {
+                peers[peerId].dataChannel = dataChannel;
+                dataChannel.onopen = () => {
+                    addMessage(`Connection with peer ${peerId.substr(5, 4)} established.`);
+                };
+                dataChannel.onmessage = (event) => {
+                    const msg = JSON.parse(event.data);
+                    addMessage(msg.text, msg.username, 'user');
+                };
+            };
+            
+            const sendSignal = (data) => {
+                const payload = { sender: myPeerId, ...data };
+                mqttClient.publish(MQTT_TOPIC, JSON.stringify(payload));
+            };
+
+            const broadcastMessage = (text) => {
+                addMessage(text, myUsername, 'user');
+                const message = { username: myUsername, text: text };
+                Object.values(peers).forEach(peer => {
+                    if (peer.dataChannel && peer.dataChannel.readyState === 'open') {
+                        peer.dataChannel.send(JSON.stringify(message));
+                    }
+                });
+            };
+            
+            sendButton.addEventListener('click', () => {
+                const text = chatInput.value;
+                if (text) {
+                    broadcastMessage(text);
+                    chatInput.value = '';
+                }
+            });
+
+            chatInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    sendButton.click();
+                }
+            });
+
+            // Mulai semuanya
+            connectToSignaling();
+        }
+    </script>
 </body>
 </html>
