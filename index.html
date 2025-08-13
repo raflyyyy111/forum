@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>P2P Chat [v4 - Stabilized]</title>
+    <title>P2P Chat [v5 - Final Fix]</title>
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
         :root {
@@ -105,13 +105,13 @@
             const sendButton = document.getElementById('send-button');
 
             const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
-            const MQTT_TOPIC_PREFIX = 'webrtc-p2p-chat-app-v4-stable/';
+            const MQTT_TOPIC_PREFIX = 'webrtc-p2p-chat-app-v5-stable/';
             const MQTT_TOPIC = MQTT_TOPIC_PREFIX + roomName;
             const STUN_SERVERS = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
             const myPeerId = 'peer_' + Math.random().toString(36).substr(2, 9);
             const myUsername = 'User-' + Math.random().toString(36).substr(2, 4).toUpperCase();
-            const peers = {}; // State: { pc, dc, iceQueue }
+            const peers = {};
             let mqttClient = null;
 
             const addMessage = (text, sender = "System", type = "system") => {
@@ -129,7 +129,7 @@
                     topic: MQTT_TOPIC,
                     payload: JSON.stringify({ sender: myPeerId, type: 'leave' }),
                     qos: 1,
-                    retain: false
+                    retain: false // Pesan 'leave' tidak perlu disimpan
                 };
                 mqttClient = mqtt.connect(MQTT_BROKER, { will });
 
@@ -138,8 +138,11 @@
                     mqttClient.subscribe(MQTT_TOPIC, (err) => {
                         if (!err) {
                             const payload = { sender: myPeerId, type: 'join' };
-                            mqttClient.publish(MQTT_TOPIC, JSON.stringify(payload));
-                            addMessage(`You joined as ${myUsername}. Waiting for peers...`);
+                            // **FIX UTAMA**: Menggunakan 'retain: true' agar pesan join disimpan oleh broker
+                            // untuk diberikan kepada pengguna yang baru bergabung.
+                            const options = { retain: true };
+                            mqttClient.publish(MQTT_TOPIC, JSON.stringify(payload), options);
+                            addMessage(`You joined as ${myUsername}. Establishing connections...`);
                         }
                     });
                 });
@@ -159,22 +162,23 @@
                 const peerId = data.sender;
                 switch (data.type) {
                     case 'join':
+                        if (peers[peerId]) return; // Jika sudah ada, abaikan
+                        addMessage(`Peer ${peerId.substr(5, 4)} detected. Initiating connection...`);
+                        // Hanya peer dengan ID lebih besar yang memulai koneksi.
                         if (myPeerId > peerId) {
-                            addMessage(`Peer ${peerId.substr(5, 4)} detected. Initiating connection...`);
-                            createPeerConnection(peerId, true);
+                            await createPeerConnection(peerId, true);
                         }
                         break;
                     case 'offer':
-                        addMessage(`Receiving connection offer from ${peerId.substr(5, 4)}...`);
                         await createPeerConnection(peerId, false, data.offer);
                         break;
                     case 'answer':
-                        if (peers[peerId]) {
+                        if (peers[peerId] && peers[peerId].pc.signalingState === 'have-local-offer') {
                            await peers[peerId].pc.setRemoteDescription(new RTCSessionDescription(data.answer));
                         }
                         break;
                     case 'candidate':
-                        if (peers[peerId]) {
+                        if (peers[peerId] && peers[peerId].pc.remoteDescription) {
                             await peers[peerId].pc.addIceCandidate(new RTCIceCandidate(data.candidate));
                         }
                         break;
@@ -184,6 +188,8 @@
                             peers[peerId].pc.close();
                             delete peers[peerId];
                         }
+                        // Membersihkan pesan 'retain' dari user yang keluar
+                        mqttClient.publish(MQTT_TOPIC, JSON.stringify({ sender: peerId, type: 'join' }), { retain: true });
                         break;
                 }
             };
@@ -201,26 +207,21 @@
                 };
                 
                 pc.onconnectionstatechange = () => {
-                    if (pc.connectionState === 'failed') {
-                        addMessage(`Connection with ${peerId.substr(5, 4)} failed.`, "System", "error");
-                        pc.close();
-                        delete peers[peerId];
+                    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
+                        if (peers[peerId]) {
+                           addMessage(`Connection with ${peerId.substr(5, 4)} lost.`, "System", "error");
+                           pc.close();
+                           delete peers[peerId];
+                        }
                     }
                 };
 
                 const setupDataChannel = (dc) => {
                     peers[peerId].dc = dc;
-                    dc.onopen = () => addMessage(`✅ Secure P2P connection established with ${peerId.substr(5, 4)}.`);
+                    dc.onopen = () => addMessage(`✅ Secure connection to ${peerId.substr(5, 4)} established.`);
                     dc.onmessage = (event) => {
                         const msg = JSON.parse(event.data);
                         addMessage(msg.text, msg.username, 'user');
-                    };
-                    dc.onclose = () => {
-                        // This event is often handled by 'leave' signal, but good as a fallback.
-                        if (peers[peerId]) {
-                           addMessage(`Connection with ${peerId.substr(5, 4)} closed.`);
-                           delete peers[peerId];
-                        }
                     };
                 };
 
